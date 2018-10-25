@@ -1,0 +1,13 @@
+lib: [
+  "_build/install/default/lib/lwt_gauge/META" {"META"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.a" {"lwt_gauge.a"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.cma" {"lwt_gauge.cma"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.cmi" {"lwt_gauge.cmi"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.cmt" {"lwt_gauge.cmt"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.cmx" {"lwt_gauge.cmx"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.cmxa" {"lwt_gauge.cmxa"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.cmxs" {"lwt_gauge.cmxs"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.dune" {"lwt_gauge.dune"}
+  "_build/install/default/lib/lwt_gauge/lwt_gauge.ml" {"lwt_gauge.ml"}
+  "_build/install/default/lib/lwt_gauge/opam" {"opam"}
+]
