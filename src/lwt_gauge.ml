@@ -49,7 +49,9 @@ let make' type_ ~name ~count ?size stream =
   { type_; name; is_closed; is_empty; count; size; }
 
 let make type_ ~name ?(count=0) ?size stream =
-  make' type_ ~name ~count:(ref count) ?size stream
+  let count = ref count in
+  let incr () = count := !count + 1 in
+  make' type_ ~name ~count ?size stream, incr
 
 let attach g s stream =
   let handle =
@@ -75,7 +77,7 @@ let attach g s stream =
   end
 
 let gauge g type_ ~name ?count ?size stream =
-  let s = make type_ ~name ?count ?size stream in
+  let (s, _incr) = make type_ ~name ?count ?size stream in
   attach g s stream
 
 let end_gauge { streams; } =
@@ -145,8 +147,8 @@ module Lwt_stream = struct
     | None -> create ()
     | Some g ->
     let (s, f) = create () in
-    let s' = make Unbounded ~name s in
-    let f = function Some _ as x -> s'.count := !(s'.count) + 1; f x | None -> f None in
+    let (s', incr) = make Unbounded ~name s in
+    let f = function Some _ as x -> incr (); f x | None -> f None in
     attach g s' s, f
 
   let create_with_reference ?name () =
@@ -154,8 +156,8 @@ module Lwt_stream = struct
     | None -> create_with_reference ()
     | Some g ->
     let (s, f, r) = create_with_reference () in
-    let s' = make Unbounded ~name s in
-    let f = function Some _ as x -> s'.count := !(s'.count) + 1; f x | None -> f None in
+    let (s', incr) = make Unbounded ~name s in
+    let f = function Some _ as x -> incr (); f x | None -> f None in
     attach g s' s, f, r
 
   let create_bounded ?name n =
@@ -163,12 +165,12 @@ module Lwt_stream = struct
     | None -> create_bounded n
     | Some g ->
     let (s, p) = create_bounded n in
-    let s' = make Bounded ~name ~size:n s in
+    let (s', incr) = make Bounded ~name ~size:n s in
     let s = attach g s' s in
     s, object
       method size = p #size
       method resize n = s'.size <- Some n; p #resize n
-      method push x = let%lwt () = p #push x in s'.count := !(s'.count) + 1; Lwt.return_unit
+      method push x = let%lwt () = p #push x in incr (); Lwt.return_unit
       method close = p #close
       method count = p #count
       method blocked = p #blocked
