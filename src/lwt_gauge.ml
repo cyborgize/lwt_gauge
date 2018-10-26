@@ -1,4 +1,7 @@
 
+open ExtLib
+open Printf
+
 let log = Log.from "lwt_gauge"
 
 type stream_type =
@@ -26,7 +29,8 @@ let string_of_stream_type = function
 type stream = {
   type_ : stream_type;
   name : string option;
-  is_active : unit -> bool;
+  is_closed : unit -> bool;
+  is_empty : unit -> bool;
 }
 
 type gauge = {
@@ -34,13 +38,13 @@ type gauge = {
 }
 
 let gauge g type_ ~name stream =
-  let is_active () =
-    not (Lwt_stream.is_closed stream) ||
+  let is_closed () = Lwt_stream.is_closed stream in
+  let is_empty () =
     match Lwt.state (Lwt_stream.is_empty stream) with
-    | Return is_empty -> not is_empty
+    | Return is_empty -> is_empty
     | Sleep | Fail _ -> assert false (* if is_closed, is_empty is guaranteed not to block *)
   in
-  let s = { type_; name; is_active; } in
+  let s = { type_; name; is_closed; is_empty; } in
   let handle =
     match g.streams with
     | Some streams -> Dllist.prepend streams s
@@ -64,16 +68,22 @@ let end_gauge { streams; } =
   match streams with
   | None -> ()
   | Some streams ->
-  let streams =
-    Dllist.to_list streams |>
-    List.filter (fun { is_active; _ } -> is_active ())
-  in
-  match streams with
-  | [] -> ()
-  | _ ->
+  let streams = Dllist.to_list streams in
   log #warn "%d streams are still active:" (List.length streams);
-  List.iteri begin fun i { name; type_; _ } ->
-    log #warn "%4d) Lwt_stream.%s ~name:%S" (i + 1) (string_of_stream_type type_) (Option.default "<unnamed>" name)
+  List.iteri begin fun i { name; type_; is_closed; is_empty; } ->
+    let attrs =
+      match is_closed () with
+      | false -> []
+      | true ->
+      "closed" ::
+      match is_empty () with
+      | false -> []
+      | true ->
+      "empty" :: []
+    in
+    log #warn "%4d) Lwt_stream.%s ~name:%S%s"
+      (i + 1) (string_of_stream_type type_) (Option.default "<unnamed>" name)
+      (match attrs with [] -> "" | _ -> sprintf " (* %s *)" (String.concat ", " attrs))
   end streams
 
 module Lwt_stream = struct
