@@ -31,20 +31,27 @@ type stream = {
   name : string option;
   is_closed : unit -> bool;
   is_empty : unit -> bool;
+  count : int ref;
+  mutable size : int option;
 }
 
 type gauge = {
   mutable streams : stream Dllist.node_t option;
 }
 
-let gauge g type_ ~name stream =
+let make' type_ ~name ~count ?size stream =
   let is_closed () = Lwt_stream.is_closed stream in
   let is_empty () =
     match Lwt.state (Lwt_stream.is_empty stream) with
     | Return is_empty -> is_empty
     | Sleep | Fail _ -> assert false (* if is_closed, is_empty is guaranteed not to block *)
   in
-  let s = { type_; name; is_closed; is_empty; } in
+  { type_; name; is_closed; is_empty; count; size; }
+
+let make type_ ~name ?(count=0) ?size stream =
+  make' type_ ~name ~count:(ref count) ?size stream
+
+let attach g s stream =
   let handle =
     match g.streams with
     | Some streams -> Dllist.prepend streams s
@@ -61,8 +68,15 @@ let gauge g type_ ~name stream =
     let next = Dllist.drop handle in
     g.streams <- if next != handle then Some next else None
   in
-  let fin = Lwt_stream.from_direct (fun () -> remove (); None) in
-  Lwt_stream.append stream fin
+  Lwt_stream.from begin fun () ->
+    match%lwt Lwt_stream.get stream with
+    | Some _ as x -> s.count := !(s.count) - 1; Lwt.return x
+    | None -> remove (); Lwt.return_none
+  end
+
+let gauge g type_ ~name ?count ?size stream =
+  let s = make type_ ~name ?count ?size stream in
+  attach g s stream
 
 let end_gauge { streams; } =
   match streams with
@@ -70,7 +84,7 @@ let end_gauge { streams; } =
   | Some streams ->
   let streams = Dllist.to_list streams in
   log #warn "%d streams are still active:" (List.length streams);
-  List.iteri begin fun i { name; type_; is_closed; is_empty; } ->
+  List.iteri begin fun i { name; type_; is_closed; is_empty; count; size; } ->
     let attrs =
       match is_closed () with
       | false -> []
@@ -81,9 +95,15 @@ let end_gauge { streams; } =
       | true ->
       "empty" :: []
     in
-    log #warn "%4d) Lwt_stream.%s ~name:%S%s"
-      (i + 1) (string_of_stream_type type_) (Option.default "<unnamed>" name)
-      (match attrs with [] -> "" | _ -> sprintf " (* %s *)" (String.concat ", " attrs))
+    let attrs =
+      begin match size with
+      | Some size -> sprintf "%d/%d" !count size
+      | None -> string_of_int !count
+      end ::
+      attrs
+    in
+    log #warn "%4d) Lwt_stream.%s ~name:%S (* %s *)"
+      (i + 1) (string_of_stream_type type_) (Option.default "<unnamed>" name) (String.concat ", " attrs)
   end streams
 
 module Lwt_stream = struct
@@ -95,48 +115,87 @@ module Lwt_stream = struct
   let from ?name f =
     match Lwt.get tls with
     | None -> from f
-    | Some g -> gauge g From ~name (from f)
+    | Some g ->
+    let count = ref 0 in
+    let f () =
+      match%lwt f () with
+      | Some _ as x -> count := !count + 1; Lwt.return x
+      | None -> Lwt.return_none
+    in
+    let s = from f in
+    let s' = make' From ~name ~count s in
+    attach g s' s
 
   let from_direct ?name f =
     match Lwt.get tls with
     | None -> from_direct f
-    | Some g -> gauge g FromDirect ~name (from_direct f)
+    | Some g ->
+    let count = ref 0 in
+    let f () =
+      match f () with
+      | Some _ as x -> count := !count + 1; x
+      | None -> None
+    in
+    let s = from_direct f in
+    let s' = make' FromDirect ~name ~count s in
+    attach g s' s
 
   let create ?name () =
     match Lwt.get tls with
     | None -> create ()
     | Some g ->
     let (s, f) = create () in
-    gauge g Unbounded ~name s, f
+    let s' = make Unbounded ~name s in
+    let f = function Some _ as x -> s'.count := !(s'.count) + 1; f x | None -> f None in
+    attach g s' s, f
 
   let create_with_reference ?name () =
     match Lwt.get tls with
     | None -> create_with_reference ()
     | Some g ->
     let (s, f, r) = create_with_reference () in
-    gauge g Unbounded ~name s, f, r
+    let s' = make Unbounded ~name s in
+    let f = function Some _ as x -> s'.count := !(s'.count) + 1; f x | None -> f None in
+    attach g s' s, f, r
 
   let create_bounded ?name n =
     match Lwt.get tls with
     | None -> create_bounded n
     | Some g ->
     let (s, p) = create_bounded n in
-    gauge g Bounded ~name s, p
+    let s' = make Bounded ~name ~size:n s in
+    let s = attach g s' s in
+    s, object
+      method size = p #size
+      method resize n = s'.size <- Some n; p #resize n
+      method push x = let%lwt () = p #push x in s'.count := !(s'.count) + 1; Lwt.return_unit
+      method close = p #close
+      method count = p #count
+      method blocked = p #blocked
+      method closed = p #closed
+      method set_reference : 'a. 'a -> unit = fun x -> p #set_reference x
+    end
 
   let of_list ?name l =
     match Lwt.get tls with
     | None -> of_list l
-    | Some g -> gauge g OfList ~name (of_list l)
+    | Some g ->
+    let n = List.length l in
+    gauge g OfList ~name ~count:n ~size:n (of_list l)
 
   let of_array ?name a =
     match Lwt.get tls with
     | None -> of_array a
-    | Some g -> gauge g OfArray ~name (of_array a)
+    | Some g ->
+    let n = Array.length a in
+    gauge g OfArray ~name ~count:n ~size:n (of_array a)
 
   let of_string ?name s =
     match Lwt.get tls with
     | None -> of_string s
-    | Some g -> gauge g OfString ~name (of_string s)
+    | Some g ->
+    let n = String.length s in
+    gauge g OfString ~name ~count:n ~size:n (of_string s)
 
   let clone ?name s =
     match Lwt.get tls with
