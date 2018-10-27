@@ -28,6 +28,15 @@ module Gauge = struct
     | OfString -> "of_string"
     | Clone -> "clone"
 
+  type probe = {
+    type_ : stream_type;
+    name : string option;
+    count : int;
+    size : int option;
+    is_closed : bool;
+    is_empty : bool;
+  }
+
   type props = {
     type_ : stream_type;
     name : string option;
@@ -51,6 +60,8 @@ module Gauge = struct
   type global_state = {
     mutable streams : gauge Dllist.node_t option;
   }
+
+  let tls : global_state Lwt.key = Lwt.new_key ()
 
   let make'' type_ ~name ?(count=0) ?size () =
     let props = { type_; name; count; size; } in
@@ -102,34 +113,31 @@ module Gauge = struct
     let s = make type_ ~name ?count ?size stream in
     attach g s stream
 
-  let end_gauge { streams; } =
+  let probe_all () =
+    match Lwt.get tls with
+    | None -> []
+    | Some { streams; } ->
     match streams with
-    | None -> ()
+    | None -> []
     | Some streams ->
-    let streams = Dllist.to_list streams in
-    log #warn "%d streams are still active:" (List.length streams);
-    List.iteri begin fun i s ->
-      let attrs =
-        match s #is_closed with
-        | false -> []
-        | true ->
-        "closed" ::
-        match s #is_empty with
-        | false -> []
-        | true ->
-        "empty" :: []
-      in
+    Dllist.to_list streams |>
+    List.map begin fun s ->
       let { type_; name; count; size; } = s #controls #props in
-      let attrs =
-        begin match size with
-        | Some size -> sprintf "%d/%d" count size
-        | None -> string_of_int count
-        end ::
-        attrs
-      in
-      log #warn "%4d) Lwt_stream.%s ~name:%S (* %s *)"
-        (i + 1) (string_of_stream_type type_) (Option.default "<unnamed>" name) (String.concat ", " attrs)
-    end streams
+      let is_closed = s #is_closed in
+      let is_empty = is_closed && s #is_empty in
+      { type_; name; count; size; is_closed; is_empty; }
+    end
+
+  let show_probe { type_; name; count; size; is_closed; is_empty; } =
+    let attrs = match is_closed with false -> [] | true -> "closed" :: [] in
+    let attrs = match is_empty with false -> attrs | true -> "empty" :: attrs in
+    let attrs =
+      match size with
+      | Some size -> sprintf "%d/%d" count size :: attrs
+      | None -> string_of_int count :: attrs
+    in
+    sprintf "Lwt_stream.%s ~name:%S (* %s *)"
+      (string_of_stream_type type_) (Option.default "<unnamed>" name) (String.concat ", " attrs)
 
 end
 
@@ -138,8 +146,6 @@ module Lwt_stream = struct
   include Lwt_stream
 
   open Gauge
-
-  let tls = Lwt.new_key ()
 
   let from ?name f =
     match Lwt.get tls with
@@ -234,6 +240,15 @@ module Lwt_stream = struct
   let with_gauge f =
     let gauge = { streams = None; } in
     Lwt.with_value tls (Some gauge) @@ fun () ->
-    (f ()) [%lwt.finally end_gauge gauge; Lwt.return_unit; ]
+    let fin () =
+      match probe_all () with
+      | [] -> ()
+      | streams ->
+      log #warn "%d streams are still active:" (List.length streams);
+      List.iteri begin fun i probe ->
+        log #warn "%4d) %s" (i + 1) (show_probe probe)
+      end streams
+    in
+    (f ()) [%lwt.finally fin (); Lwt.return_unit; ]
 
 end
