@@ -298,7 +298,9 @@ module Lwt_stream = struct
   let clone ?name s =
     match Lwt.get is_active with
     | None -> clone s
-    | Some _ -> gauge Clone ~name (clone s)
+    | Some _ ->
+    let count = match find_gauge s with Some s -> s #controls #props.count | None -> 0 in
+    gauge Clone ~name ~count (clone s)
 
   let peek s =
     (match find_gauge s with Some s -> s #controls #peek | None -> ());
