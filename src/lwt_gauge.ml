@@ -67,12 +67,22 @@ module Gauge = struct
 
   let is_active : unit Lwt.key = Lwt.new_key ()
 
+  type any_lwt_stream = Lwt_stream : 'a Lwt_stream.t -> any_lwt_stream
+
+  module StreamHashtbl = Ephemeron.K1.Make(struct
+    type t = any_lwt_stream
+    let equal = (==)
+    let hash = Hashtbl.hash
+  end)
+
   type global_state = {
     mutable gauges : gauge Dllist.node_t option;
+    streams : gauge StreamHashtbl.t;
   }
 
   let global_state = {
     gauges = None;
+    streams = StreamHashtbl.create 10;
   }
 
   let make'' type_ ~name ?(count=0) ?size () =
@@ -147,17 +157,18 @@ module Gauge = struct
     | Some gauges ->
     Dllist.to_list gauges |>
     List.map begin fun s ->
-      let { type_; name; count; size; get; push; } = s #controls #props in
+      let { type_; name; count; size; get; push; peeked; } = s #controls #props in
       let is_closed = s #is_closed in
       let is_empty = is_closed && s #is_empty in
-      { type_; name; count; size; get; push; is_closed; is_empty; }
+      { type_; name; count; size; get; push; peeked; is_closed; is_empty; }
     end
 
-  let show_probe { type_; name; count; size; get; push; is_closed; is_empty; } =
+  let show_probe { type_; name; count; size; get; push; peeked; is_closed; is_empty; } =
     let attrs = match is_closed with false -> [] | true -> "closed" :: [] in
     let attrs = match is_empty with false -> attrs | true -> "empty" :: attrs in
     let attrs = match get with 0 -> attrs | _ -> sprintf "%d reading" get :: attrs in
     let attrs = match push with 0 -> attrs | _ -> sprintf "%d writing" push :: attrs in
+    let attrs = match peeked with false -> attrs | true -> "peeked" :: attrs in
     let attrs =
       match size with
       | Some size -> sprintf "%d/%d" count size :: attrs
@@ -275,6 +286,10 @@ module Lwt_stream = struct
     match Lwt.get is_active with
     | None -> clone s
     | Some _ -> gauge Clone ~name (clone s)
+
+  let peek s =
+    (match find_gauge s with Some s -> s #controls #peek | None -> ());
+    peek s
 
   let with_gauge f =
     Lwt.with_value is_active (Some ()) @@ fun () ->
