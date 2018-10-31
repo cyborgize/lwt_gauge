@@ -35,6 +35,7 @@ module Gauge = struct
     size : int option;
     get : int;
     push : int;
+    peeked : bool;
     is_closed : bool;
     is_empty : bool;
   }
@@ -46,6 +47,7 @@ module Gauge = struct
     mutable size : int option;
     mutable get : int;
     mutable push : int;
+    mutable peeked : bool;
   }
 
   type controls = <
@@ -56,6 +58,7 @@ module Gauge = struct
     decr_get : unit;
     incr_push : unit;
     decr_push : unit;
+    peek : unit;
     props : props;
   >
 
@@ -86,15 +89,16 @@ module Gauge = struct
   }
 
   let make'' type_ ~name ?(count=0) ?size () =
-    let props = { type_; name; count; size; get = 0; push = 0; } in
+    let props = { type_; name; count; size; get = 0; push = 0; peeked = false; } in
     object
       method incr = props.count <- props.count + 1
       method decr = props.count <- props.count - 1
       method resize n = props.size <- Some n
-      method incr_get = props.get <- props.get + 1
+      method incr_get = props.get <- props.get + 1; props.peeked <- false
       method decr_get = props.get <- props.get - 1
       method incr_push = props.push <- props.push + 1
       method decr_push = props.push <- props.push - 1
+      method peek = props.peeked <- true
       method props = props
     end
 
@@ -138,15 +142,24 @@ module Gauge = struct
         Lwt.return_unit;
       ]
     in
-    Lwt_stream.from begin fun () ->
-      match%lwt get () with
-      | Some _ as x -> s #controls #decr; Lwt.return x
-      | None -> remove (); Lwt.return_none
-    end
+    let stream =
+      Lwt_stream.from begin fun () ->
+        match%lwt get () with
+        | Some _ as x -> s #controls #decr; Lwt.return x
+        | None -> remove (); Lwt.return_none
+      end
+    in
+    StreamHashtbl.add global_state.streams (Lwt_stream stream) s;
+    stream
 
   let gauge type_ ~name ?count ?size stream =
     let s = make type_ ~name ?count ?size stream in
     attach s stream
+
+  let find_gauge stream =
+    match Lwt.get is_active with
+    | None -> None
+    | Some _ -> StreamHashtbl.find_opt global_state.streams (Lwt_stream stream)
 
   let probe_all () =
     match Lwt.get is_active with
