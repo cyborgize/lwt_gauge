@@ -33,6 +33,8 @@ module Gauge = struct
     name : string option;
     count : int;
     size : int option;
+    get : int;
+    push : int;
     is_closed : bool;
     is_empty : bool;
   }
@@ -42,12 +44,18 @@ module Gauge = struct
     name : string option;
     mutable count : int;
     mutable size : int option;
+    mutable get : int;
+    mutable push : int;
   }
 
   type controls = <
     incr : unit;
     decr : unit;
     resize : int -> unit;
+    incr_get : unit;
+    decr_get : unit;
+    incr_push : unit;
+    decr_push : unit;
     props : props;
   >
 
@@ -68,11 +76,15 @@ module Gauge = struct
   }
 
   let make'' type_ ~name ?(count=0) ?size () =
-    let props = { type_; name; count; size; } in
+    let props = { type_; name; count; size; get = 0; push = 0; } in
     object
       method incr = props.count <- props.count + 1
-      method decr = props.count <- props.count -1
+      method decr = props.count <- props.count - 1
       method resize n = props.size <- Some n
+      method incr_get = props.get <- props.get + 1
+      method decr_get = props.get <- props.get - 1
+      method incr_push = props.push <- props.push + 1
+      method decr_push = props.push <- props.push - 1
       method props = props
     end
 
@@ -107,8 +119,17 @@ module Gauge = struct
       let next = Dllist.drop handle in
       global_state.gauges <- if next != handle then Some next else None
     in
+    let get () =
+      begin
+        s #controls #incr_get;
+        Lwt_stream.get stream
+      end [%finally
+        s #controls #decr_get;
+        Lwt.return_unit;
+      ]
+    in
     Lwt_stream.from begin fun () ->
-      match%lwt Lwt_stream.get stream with
+      match%lwt get () with
       | Some _ as x -> s #controls #decr; Lwt.return x
       | None -> remove (); Lwt.return_none
     end
@@ -126,15 +147,17 @@ module Gauge = struct
     | Some gauges ->
     Dllist.to_list gauges |>
     List.map begin fun s ->
-      let { type_; name; count; size; } = s #controls #props in
+      let { type_; name; count; size; get; push; } = s #controls #props in
       let is_closed = s #is_closed in
       let is_empty = is_closed && s #is_empty in
-      { type_; name; count; size; is_closed; is_empty; }
+      { type_; name; count; size; get; push; is_closed; is_empty; }
     end
 
-  let show_probe { type_; name; count; size; is_closed; is_empty; } =
+  let show_probe { type_; name; count; size; get; push; is_closed; is_empty; } =
     let attrs = match is_closed with false -> [] | true -> "closed" :: [] in
     let attrs = match is_empty with false -> attrs | true -> "empty" :: attrs in
+    let attrs = match get with 0 -> attrs | _ -> sprintf "%d reading" get :: attrs in
+    let attrs = match push with 0 -> attrs | _ -> sprintf "%d writing" push :: attrs in
     let attrs =
       match size with
       | Some size -> sprintf "%d/%d" count size :: attrs
@@ -204,10 +227,22 @@ module Lwt_stream = struct
     let (s, p) = create_bounded n in
     let s' = make Bounded ~name ~size:n s in
     let s = attach s' s in
+    let c = s' #controls in
     s, object
       method size = p #size
-      method resize n = s' #controls #resize n; p #resize n
-      method push x = let%lwt () = p #push x in s' #controls #incr; Lwt.return_unit
+      method resize n = c #resize n; p #resize n
+      method push x =
+        let%lwt () =
+          begin
+            c #incr_push;
+            p #push x
+          end [%finally
+            c #decr_push;
+            Lwt.return_unit
+          ]
+        in
+        c #incr;
+        Lwt.return_unit
       method close = p #close
       method count = p #count
       method blocked = p #blocked
