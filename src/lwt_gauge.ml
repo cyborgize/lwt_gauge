@@ -15,9 +15,9 @@ module Gauge = struct
     | OfList
     | OfArray
     | OfString
-    | Clone
+    | Clone of stream_type
 
-  let string_of_stream_type = function
+  let rec string_of_stream_type = function
     | From -> "from"
     | FromDirect -> "from_direct"
     | Bounded -> "create_bounded"
@@ -26,12 +26,14 @@ module Gauge = struct
     | OfList -> "of_list"
     | OfArray -> "of_array"
     | OfString -> "of_string"
-    | Clone -> "clone"
+    | Clone type_ -> sprintf "clone(Lwt_stream.%s)" (string_of_stream_type type_)
 
   type probe = {
     type_ : stream_type;
     name : string option;
-    count : int;
+    written : int;
+    read : int;
+    count : int; (* count = written - read *)
     size : int option;
     get : int;
     push : int;
@@ -43,7 +45,9 @@ module Gauge = struct
   type props = {
     type_ : stream_type;
     name : string option;
-    mutable count : int;
+    offset : int;
+    written : int ref;
+    mutable read : int;
     mutable size : int option;
     mutable get : int;
     mutable push : int;
@@ -89,11 +93,11 @@ module Gauge = struct
     streams = StreamHashtbl.create 10;
   }
 
-  let make'' type_ ~name ?(count=0) ?size () =
-    let props = { type_; name; count; size; get = 0; push = 0; peeked = false; } in
+  let make'' type_ ~name ?(written=(ref 0)) ?(offset=(!written)) ?size () =
+    let props = { type_; name; offset; written; read = 0; size; get = 0; push = 0; peeked = false; } in
     object
-      method incr = props.count <- props.count + 1
-      method decr = props.count <- props.count - 1
+      method incr = props.written := !(props.written) + 1
+      method decr = props.read <- props.read + 1
       method resize n = props.size <- Some n
       method incr_get = props.get <- props.get + 1; props.peeked <- false
       method decr_get = props.get <- props.get - 1
@@ -114,8 +118,8 @@ module Gauge = struct
       method controls = controls
     end
 
-  let make type_ ~name ?count ?size stream =
-    let controls = make'' type_ ~name ?count ?size () in
+  let make type_ ~name ?written ?size stream =
+    let controls = make'' type_ ~name ?written ?size () in
     make' controls stream
 
   let attach s stream =
@@ -154,8 +158,8 @@ module Gauge = struct
     StreamHashtbl.add global_state.streams (Lwt_stream stream) s;
     stream
 
-  let gauge type_ ~name ?count ?size stream =
-    let s = make type_ ~name ?count ?size stream in
+  let gauge type_ ~name ?written ?size stream =
+    let s = make type_ ~name ?written ?size stream in
     attach s stream
 
   let find_gauge stream =
@@ -172,13 +176,25 @@ module Gauge = struct
     | Some gauges ->
     Dllist.to_list gauges |>
     List.map begin fun s ->
-      let { type_; name; count; size; get; push; peeked; } = s #controls #props in
+      let { type_; name; offset; written; read; size; get; push; peeked; } = s #controls #props in
       let is_closed = s #is_closed in
       let is_empty = is_closed && s #is_empty in
-      { type_; name; count; size; get; push; peeked; is_closed; is_empty; }
+      {
+        type_;
+        name;
+        written = !written - offset;
+        read;
+        count = !written - read - offset;
+        size;
+        get;
+        push;
+        peeked;
+        is_closed;
+        is_empty;
+      }
     end
 
-  let show_probe { type_; name; count; size; get; push; peeked; is_closed; is_empty; } =
+  let show_probe { type_; name; written; read; count; size; get; push; peeked; is_closed; is_empty; } =
     let attrs = match is_closed with false -> [] | true -> "closed" :: [] in
     let attrs = match is_empty with false -> attrs | true -> "empty" :: attrs in
     let attrs = match get with 0 -> attrs | _ -> sprintf "%d reading" get :: attrs in
@@ -186,7 +202,7 @@ module Gauge = struct
     let attrs = match peeked with false -> attrs | true -> "peeked" :: attrs in
     let attrs =
       match size with
-      | Some size -> sprintf "%d/%d" count size :: attrs
+      | Some size -> sprintf "%d-%d=%d/%d" written read count size :: attrs
       | None -> string_of_int count :: attrs
     in
     sprintf "Lwt_stream.%s ~name:%S (* %s *)"
@@ -281,28 +297,31 @@ module Lwt_stream = struct
     | None -> of_list l
     | Some _ ->
     let n = List.length l in
-    gauge OfList ~name ~count:n ~size:n (of_list l)
+    gauge OfList ~name ~written:(ref n) ~size:n (of_list l)
 
   let of_array ?name a =
     match Lwt.get is_active with
     | None -> of_array a
     | Some _ ->
     let n = Array.length a in
-    gauge OfArray ~name ~count:n ~size:n (of_array a)
+    gauge OfArray ~name ~written:(ref n) ~size:n (of_array a)
 
   let of_string ?name s =
     match Lwt.get is_active with
     | None -> of_string s
     | Some _ ->
     let n = String.length s in
-    gauge OfString ~name ~count:n ~size:n (of_string s)
+    gauge OfString ~name ~written:(ref n) ~size:n (of_string s)
 
   let clone ?name s =
     match Lwt.get is_active with
     | None -> clone s
     | Some _ ->
-    let count = match find_gauge s with Some s -> s #controls #props.count | None -> 0 in
-    gauge Clone ~name ~count (clone s)
+    match find_gauge s with
+    | None -> clone s
+    | Some s' ->
+    let { type_; written; _ } = s' #controls #props in
+    gauge (Clone type_) ~name ~written (clone s)
 
   let get s =
     (match find_gauge s with Some s -> s #controls #unpeek | None -> ());
