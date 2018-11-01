@@ -59,6 +59,7 @@ module Gauge = struct
     incr_push : unit;
     decr_push : unit;
     peek : unit;
+    unpeek : unit;
     props : props;
   >
 
@@ -99,6 +100,7 @@ module Gauge = struct
       method incr_push = props.push <- props.push + 1
       method decr_push = props.push <- props.push - 1
       method peek = props.peeked <- true
+      method unpeek = props.peeked <- false
       method props = props
     end
 
@@ -301,6 +303,14 @@ module Lwt_stream = struct
     | Some _ ->
     let count = match find_gauge s with Some s -> s #controls #props.count | None -> 0 in
     gauge Clone ~name ~count (clone s)
+
+  let get s =
+    (match find_gauge s with Some s -> s #controls #unpeek | None -> ());
+    get s
+
+  let next s =
+    (match find_gauge s with Some s -> s #controls #unpeek | None -> ());
+    next s
 
   let peek s =
     (match find_gauge s with Some s -> s #controls #peek | None -> ());
