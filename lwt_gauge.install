@@ -11,3 +11,6 @@ lib: [
   "_build/install/default/lib/lwt_gauge/lwt_gauge.ml" {"lwt_gauge.ml"}
   "_build/install/default/lib/lwt_gauge/opam" {"opam"}
 ]
+doc: [
+  "_build/install/default/doc/lwt_gauge/LICENSE"
+]
