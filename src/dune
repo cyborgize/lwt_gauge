@@ -1,6 +1,6 @@
 (library
   (name lwt_gauge)
   (public_name lwt_gauge)
-  (libraries lwt lwt_ppx extlib devkit)
+  (libraries lwt lwt_ppx extlib)
   (preprocess (pps lwt_ppx))
 )
