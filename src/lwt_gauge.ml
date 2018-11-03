@@ -16,8 +16,6 @@
 open ExtLib
 open Printf
 
-let log = Log.from "lwt_gauge"
-
 module Gauge = struct
 
   type stream_type =
@@ -349,17 +347,11 @@ module Lwt_stream = struct
     (match find_gauge s with Some s -> s #controls #peek | None -> ());
     peek s
 
-  let with_gauge f =
-    Lwt.with_value is_active (Some ()) @@ fun () ->
-    let fin () =
-      match probe_all () with
-      | [] -> ()
-      | gauges ->
-      log #warn "%d streams are still active:" (List.length gauges);
-      List.iteri begin fun i probe ->
-        log #warn "%4d) %s" (i + 1) (show_probe probe)
-      end gauges
-    in
-    (f ()) [%lwt.finally fin (); Lwt.return_unit; ]
+  let with_gauge f = Lwt.with_value is_active (Some ()) f
 
+  let with_gauge_check ~still_active f =
+    with_gauge @@ fun () ->
+    (f ()) [%finally match probe_all () with [] -> Lwt.return_unit | gauges -> still_active gauges; ]
+
+  let without_gauge f = Lwt.with_value is_active None f
 end
