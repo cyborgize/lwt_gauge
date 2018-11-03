@@ -1,0 +1,18 @@
+opam-version: "2.0"
+name: "lwt_gauge"
+version: "0.1"
+synopsis: "Monitor the use of Lwt_stream"
+description: """
+This library provides an instrumented version of Lwt_stream which keeps track
+of currently active streams in a program, and provides means to probe active
+streams' properties.
+"""
+maintainer: "Raman Varabets <roman.vorobets@gmail.com>"
+authors: "Raman Varabets <roman.vorobets@gmail.com>"
+license: "LGPL-2.0 with OCaml linking exception"
+homepage: "https://github.com/cyborgize/lwt_gauge"
+bug-reports: "https://github.com/cyborgize/lwt_gauge/issues"
+dev-repo: "git+https://github.com/cyborgize/lwt_gauge.git"
+depends: [ "ocaml" "ocamlfind" ]
+build: [ "dune" "build" ]
+install: [ "dune" "install" ]
